@@ -33,9 +33,12 @@ node render.mjs
 
 ```text
 .
-├── index.html          # 1080×1080 手绘 SVG 动效场景与交互预览页
-├── gen_audio.py        # 48kHz 立体声 128 BPM 配乐与卡点 Foley 拟音合成
-├── render.mjs          # Chrome CDP (--remote-debugging-pipe) → FFmpeg 逐帧渲染器
+├── .agents/skills/sound/                  # 项目级音效选材 Skill（vibe-motion/sound）
+├── .claude/skills/sound                   # 兼容软链接 -> ../../.agents/skills/sound
+├── index.html                             # 1080×1080 手绘 SVG 动效场景与交互预览页
+├── gen_audio.py                           # 48kHz 立体声 128 BPM 配乐 + Freesound CC0 真实音效混音
+├── render.mjs                             # Chrome CDP (--remote-debugging-pipe) → FFmpeg 逐帧渲染器
+├── sfx/                                   # 通过 sound skill 选材下载的 CC0 真实音效及来源清单
 ├── docs/preview.png                       # 结尾定格预览图
 └── output/gemini-neon-promo-1080x1080.mp4 # 1080×1080 14 秒渲染成片
 ```
