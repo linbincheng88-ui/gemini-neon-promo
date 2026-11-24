@@ -1,0 +1,1211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Gemini 4 Neon · 1080×1080 手绘动效宣传短片</title>
+<style>
+  @font-face {
+    font-family: 'Wenkai';
+    src: url('./fonts/LXGWWenKai-Regular.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: 'Wenkai';
+    src: url('./fonts/LXGWWenKai-Medium.ttf') format('truetype');
+    font-weight: 700;
+    font-style: normal;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: #1b1a17;
+    overflow: hidden;
+    font-family: 'Wenkai', 'PingFang SC', cursive, sans-serif;
+  }
+  body.render-mode {
+    width: 1080px;
+    height: 1080px;
+    background: #f6f3e9;
+  }
+  .shell {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 16px;
+  }
+  body.render-mode .shell {
+    width: 1080px;
+    height: 1080px;
+    padding: 0;
+    gap: 0;
+  }
+  #stage-wrap {
+    width: min(calc(100vh - 88px), calc(100vw - 32px), 1080px);
+    height: min(calc(100vh - 88px), calc(100vw - 32px), 1080px);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+    background: #f6f3e9;
+  }
+  body.render-mode #stage-wrap {
+    width: 1080px;
+    height: 1080px;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  #stage {
+    width: 100%;
+    height: 100%;
+    display: block;
+    font-family: 'Wenkai', 'PingFang SC', cursive, sans-serif;
+  }
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: rgba(250, 247, 239, 0.94);
+    border: 2px solid #302d27;
+    border-radius: 999px;
+    padding: 8px 18px;
+    color: #302d27;
+    font-size: 14px;
+  }
+  body.render-mode .controls { display: none; }
+  .controls button {
+    border: 1.5px solid #302d27;
+    background: #f2cf65;
+    color: #302d27;
+    border-radius: 999px;
+    padding: 4px 14px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .controls input[type="range"] { width: 280px; accent-color: #4f94f0; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div id="stage-wrap">
+    <svg id="stage" width="1080" height="1080" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
+  <div class="controls">
+    <button id="btn-play">暂停</button>
+    <button id="btn-replay">重播</button>
+    <input id="scrubber" type="range" min="0" max="419" value="0" />
+    <span id="time-label">00.00s / 14.00s</span>
+  </div>
+</div>
+
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const RENDER_MODE = params.get('render') === '1';
+  if (RENDER_MODE) document.body.classList.add('render-mode');
+
+  const FPS = 30;
+  const TOTAL_FRAMES = 420; // 14.0s (< 15s)
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // Palette: faithful to reference cream paper + charcoal ink + Gemini Neon luminous accents
+  const INK = '#302d27';
+  const PAPER = '#f6f3e9';
+  const TEAL = '#6bc6c2';
+  const CYAN = '#46d1e6';
+  const NEON_BLUE = '#5894f5';
+  const NEON_VIOLET = '#9e84ee';
+  const GOLD = '#f2cf65';
+  const CORAL = '#d8735e';
+  const MINT = '#7ed1b6';
+
+  const clamp = (v, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const easeOutCubic = (x) => 1 - Math.pow(1 - clamp(x), 3);
+  const easeInOutCubic = (x) => {
+    const t = clamp(x);
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  };
+  const easeOutBack = (x) => {
+    const t = clamp(x);
+    const c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  };
+  const progress = (t, a, b, ease = easeInOutCubic) => ease(clamp((t - a) / (b - a)));
+  const seed = (n) => {
+    const x = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
+    return x - Math.floor(x);
+  };
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Hand-drawn SVG primitives matching reference craft
+  const Label = ({ x, y, text, size = 18, fill = INK, anchor = 'start', weight = 400, extra = '' }) =>
+    `<text x="${x}" y="${y}" fill="${fill}" font-family="Wenkai, 'PingFang SC', cursive" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}" ${extra}>${esc(text)}</text>`;
+
+  const Box = ({ x, y, w, h, r = 9, fill = PAPER, stroke = INK, sw = 2.3, opacity = 1 }) => `
+    <g opacity="${opacity}">
+      <rect x="${(x + 1.8).toFixed(1)}" y="${(y + 1.6).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="${r}" fill="${stroke}" opacity="0.09"/>
+      <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+      <path d="M ${(x + r + 3).toFixed(1)} ${(y + 1.5).toFixed(1)} Q ${(x + w * 0.52).toFixed(1)} ${(y - 1.1).toFixed(1)} ${(x + w - r).toFixed(1)} ${(y + 1.1).toFixed(1)} M ${(x + 1.1).toFixed(1)} ${(y + r).toFixed(1)} Q ${(x - 1.0).toFixed(1)} ${(y + h * 0.58).toFixed(1)} ${(x + 1.8).toFixed(1)} ${(y + h - r).toFixed(1)}" fill="none" stroke="${stroke}" stroke-width="0.6" opacity="0.36"/>
+    </g>`;
+
+  const Star = (x, y, r = 8, fill = '#fff7d2', opacity = 1, stroke = INK) => `
+    <path d="M${x} ${y - r} Q${x + r * 0.16} ${y - r * 0.16} ${x + r} ${y} Q${x + r * 0.16} ${y + r * 0.16} ${x} ${y + r} Q${x - r * 0.16} ${y + r * 0.16} ${x - r} ${y} Q${x - r * 0.16} ${y - r * 0.16} ${x} ${y - r}Z" fill="${fill}" stroke="${stroke}" stroke-width="${Math.max(1, r * 0.14).toFixed(2)}" opacity="${opacity}"/>`;
+
+  const Heart = (x, y, s = 1, fill = '#ee8ea8') => `
+    <path transform="translate(${x} ${y}) scale(${s})" d="M0 5 C-17 -7 -13 -20 -5 -19 C-1 -19 0 -13 0 -13 C1 -22 16 -23 13 -9 C11 -2 5 3 0 8Z" fill="${fill}" stroke="${INK}" stroke-width="2.2"/>`;
+
+  const Sticker = ({ x, y, text, size = 32, fill = GOLD, rotate = 0 }) => `
+    <g transform="rotate(${rotate} ${x} ${y})">
+      ${Label({ x: x + 1.5, y: y + 3.5, text, size, anchor: 'middle', fill: INK, weight: 700, extra: `stroke="${INK}" stroke-width="8" stroke-linejoin="round"` })}
+      ${Label({ x, y, text, size, anchor: 'middle', fill, weight: 700, extra: `stroke="${INK}" stroke-width="4.4" paint-order="stroke" stroke-linejoin="round"` })}
+    </g>`;
+
+  // Stretchy rubber-hose arm matching reference signature
+  const Arm = (x1, y1, x2, y2, bend = 0) => {
+    const mx = (x1 + x2) / 2 + bend;
+    const my = (y1 + y2) / 2 - Math.abs(x2 - x1) * 0.08;
+    return `
+      <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M${x1.toFixed(1)} ${y1.toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}" stroke="${INK}" stroke-width="13"/>
+        <path d="M${x1.toFixed(1)} ${y1.toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}" stroke="${NEON_BLUE}" stroke-width="8.2"/>
+        <circle cx="${x2.toFixed(1)}" cy="${y2.toFixed(1)}" r="7.5" fill="${CYAN}" stroke="${INK}" stroke-width="2.2"/>
+      </g>`;
+  };
+
+  // Adorable original hand-drawn Gemini Neon Mascot ("小霓 · Neon Bot")
+  const NeonBot = ({ x = 0, y = 0, s = 1, t = 0, mood = 'happy', dance = false, glasses = false, rotate = 0 }) => {
+    const beat = t * (128 / 60) * Math.PI * 2;
+    const sway = dance ? Math.sin(beat * 0.5) * 7.5 : Math.sin(t * 3.5) * 1.2;
+    const hop = dance ? -Math.abs(Math.sin(beat * 0.5)) * 10 : 0;
+
+    let eyes = '';
+    if (mood === 'focus') {
+      eyes = `<path d="M27 25 l12 3.5 M61 28.5 l12 -3.5" stroke="${INK}" stroke-width="4.2" stroke-linecap="round"/>`;
+    } else if (mood === 'sleep') {
+      eyes = `<path d="M27 29 h11 M62 29 h11" stroke="${INK}" stroke-width="3.8" stroke-linecap="round"/>`;
+    } else if (mood === 'happy') {
+      eyes = `<path d="M27 31 Q33 17 40 31 M60 31 Q66 17 73 31" fill="none" stroke="${INK}" stroke-width="3.5" stroke-linecap="round"/>`;
+    } else {
+      // wink
+      eyes = `<ellipse cx="33" cy="28" rx="3.5" ry="7.5" fill="${INK}"/><circle cx="34" cy="25" r="1.4" fill="#fff" stroke="none"/><path d="M60 30 Q66 18 73 30" fill="none" stroke="${INK}" stroke-width="3.4" stroke-linecap="round"/>`;
+    }
+
+    const cheeks = (mood === 'happy' || mood === 'wink')
+      ? `<ellipse cx="22" cy="40" rx="8.5" ry="4.2" fill="#f195b2" stroke="none" opacity="0.72"/><ellipse cx="78" cy="40" rx="8.5" ry="4.2" fill="#f195b2" stroke="none" opacity="0.72"/>`
+      : '';
+
+    const hatches = Array.from({ length: 12 }, (_, i) =>
+      `<path d="M${9 + i * 7} 13 l-4 11" opacity="0.16" stroke="#c8f4ff" stroke-width="1.2"/>`).join('');
+
+    const glassesSvg = glasses ? `
+      <g transform="translate(19 -6) rotate(-4)">
+        <path d="M0 0 H66 L60 14 H43 L33 5 L24 14 H8Z" fill="${INK}" stroke="${INK}" stroke-width="1.5"/>
+        <path d="M12 3 l-5 7 m10 -7 l-5 7 m34 -7 l-5 7 m10 -7 l-5 7" stroke="#9df3ff" stroke-width="1.8" stroke-linecap="round"/>
+      </g>` : '';
+
+    return `
+      <g transform="translate(${x.toFixed(1)} ${(y + hop).toFixed(1)}) scale(${s}) rotate(${(rotate + sway).toFixed(2)} 50 35)" stroke="${INK}" stroke-width="2.3" stroke-linejoin="round">
+        ${dance ? Arm(4, 34, -16, -6 + Math.sin(beat) * 7, -14) + Arm(96, 34, 116, -10 - Math.sin(beat) * 7, 14) : ''}
+        <!-- 4 stubby legs matching reference charm -->
+        <path d="M13 60 L14 85 L23 86 L24 61 M29 61 L30 86 L39 85 L39 61 M63 61 L64 85 L73 86 L74 61 M78 60 L79 84 L88 84 L89 59" fill="url(#neon-bot-leg)"/>
+        ${!dance ? `<path d="M0 28 H-10 V40 H0 M100 28 H110 V40 H100" fill="${NEON_BLUE}"/>` : ''}
+        <!-- Cute rounded-prism hand-drawn neon body -->
+        <path d="M2 8 Q50 -4 98 8 L101 58 Q50 67 -1 58Z" fill="url(#neon-bot-body)"/>
+        <!-- Top rim highlight -->
+        <path d="M8 10 Q50 2 92 10" fill="none" stroke="#baf7ff" stroke-width="2.8" opacity="0.85" stroke-linecap="round"/>
+        ${hatches}
+        <!-- Gemini 4-point star emblem on forehead -->
+        ${Star(50, 12, 8.5, '#fff8c9', 0.96, INK)}
+        ${eyes}
+        ${cheeks}
+        <!-- Cute little smile -->
+        ${mood === 'happy' || mood === 'wink' ? `<path d="M44 41 Q50 47 56 41" fill="none" stroke="${INK}" stroke-width="2.4" stroke-linecap="round"/>` : ''}
+        ${glassesSvg}
+      </g>`;
+  };
+
+  // =====================================================================
+  // 4 Original Hand-Drawn Animated Vector Artworks for Gemini 4 Neon
+  // ViewBox: 0 0 200 300 (matches center device & thumbnails cleanly!)
+  // =====================================================================
+  const ArtCode = (t, small) => {
+    const scanY = 58 + ((t * 48) % 168);
+    const lines = [
+      { y: 58, w: 68, c: '#79c0ff', indent: 0 },
+      { y: 74, w: 112, c: '#c8b6ff', indent: 12 },
+      { y: 90, w: 94, c: '#f2cf65', indent: 12 },
+      { y: 108, w: 126, c: '#e57c73', indent: 22, strike: true },
+      { y: 126, w: 132, c: '#66e3b8', indent: 22, plus: true },
+      { y: 144, w: 118, c: '#66e3b8', indent: 22, plus: true },
+      { y: 162, w: 84, c: '#79c0ff', indent: 12 },
+      { y: 178, w: 104, c: '#56e0f0', indent: 12 },
+      { y: 196, w: 60, c: '#c8b6ff', indent: 0 },
+    ];
+    return `
+      <rect width="200" height="300" fill="url(#art-code-bg)"/>
+      <!-- Subtle blueprint grid -->
+      ${!small ? Array.from({ length: 10 }, (_, i) => `<path d="M0 ${i * 32} H200 M${i * 22} 0 V300" stroke="#4f6799" stroke-width="0.6" opacity="0.18"/>`).join('') : ''}
+      <!-- Hand-drawn IDE Window inside phone -->
+      <rect x="14" y="28" width="172" height="196" rx="12" fill="#1e2238" stroke="${INK}" stroke-width="2.5"/>
+      <rect x="14" y="28" width="172" height="22" rx="10" fill="#2d3354" stroke="${INK}" stroke-width="2"/>
+      <circle cx="26" cy="39" r="3" fill="#e57c73"/><circle cx="36" cy="39" r="3" fill="${GOLD}"/><circle cx="46" cy="39" r="3" fill="${MINT}"/>
+      ${!small ? Label({ x: 108, y: 42, text: 'agent_refactor.ts', size: 8.5, fill: '#b9c6e6', anchor: 'middle' }) : ''}
+      ${lines.map((ln, i) => {
+        const pulse = ln.plus ? 0.78 + 0.22 * Math.sin(t * 7 + i) : 0.92;
+        return `
+          ${ln.plus ? `<rect x="20" y="${ln.y - 8}" width="160" height="14" rx="3" fill="#32b88c" opacity="0.22"/>` : ''}
+          ${ln.strike ? `<rect x="20" y="${ln.y - 8}" width="160" height="14" rx="3" fill="#e06666" opacity="0.20"/>` : ''}
+          <rect x="${26 + ln.indent}" y="${ln.y - 4}" width="${ln.w}" height="6.5" rx="3.2" fill="${ln.c}" opacity="${pulse.toFixed(2)}"/>
+          ${ln.plus && !small ? `<text x="23" y="${ln.y + 2}" font-size="9" fill="#6ff2c5" font-weight="700">+</text>` : ''}
+          ${ln.strike && !small ? `<text x="23" y="${ln.y + 2}" font-size="9" fill="#f08982" font-weight="700">-</text>` : ''}
+        `;
+      }).join('')}
+      <!-- Glowing neon scan line -->
+      ${!small ? `<rect x="18" y="${scanY.toFixed(1)}" width="164" height="3" fill="${CYAN}" opacity="0.65"/>` : ''}
+      <!-- Floating Pass Badge -->
+      <g transform="translate(18 ${238 + Math.sin(t * 5) * 3})">
+        <rect x="0" y="0" width="164" height="38" rx="10" fill="#e9fbf3" stroke="${INK}" stroke-width="2.2"/>
+        <circle cx="22" cy="19" r="10" fill="${MINT}" stroke="${INK}" stroke-width="1.8"/>
+        <path d="M17 19 l4 4 7 -8" fill="none" stroke="${INK}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+        ${Label({ x: 40, y: 17, text: '42 Tests Passed', size: 12.5, fill: INK, weight: 700 })}
+        ${Label({ x: 40, y: 31, text: '一次重构 · 零报错', size: 10.5, fill: '#4e7769' })}
+      </g>
+      ${!small ? Star(174, 62, 6, GOLD) + Star(24, 212, 5, CYAN) : ''}
+    `;
+  };
+
+  const ArtReason = (t, small) => {
+    const nodes = [
+      [44, 72], [156, 76], [34, 152], [166, 148], [52, 224], [148, 220], [100, 52], [100, 248]
+    ];
+    const pulse = 1 + 0.08 * Math.sin(t * 6);
+    return `
+      <rect width="200" height="300" fill="url(#art-reason-bg)"/>
+      <!-- Twinkling stars -->
+      ${Array.from({ length: small ? 12 : 28 }, (_, i) =>
+        `<circle cx="${(seed(i + 11) * 196).toFixed(1)}" cy="${(seed(i + 41) * 290).toFixed(1)}" r="${i % 4 === 0 ? 1.6 : 0.8}" fill="#e8f9ff" opacity="${(0.45 + 0.45 * Math.sin(t * 3 + i)).toFixed(2)}"/>`).join('')}
+      <!-- Radial prism aura -->
+      <circle cx="100" cy="148" r="${(58 * pulse).toFixed(1)}" fill="${CYAN}" opacity="0.14"/>
+      <circle cx="100" cy="148" r="${(38 * pulse).toFixed(1)}" fill="${NEON_VIOLET}" opacity="0.22"/>
+      <!-- Constellation links -->
+      ${nodes.map(([nx, ny], i) => `
+        <line x1="100" y1="148" x2="${nx}" y2="${ny}" stroke="${i % 2 ? CYAN : '#d2baff'}" stroke-width="1.8" stroke-dasharray="4 4" opacity="0.65"/>
+        <circle cx="${nx}" cy="${ny}" r="${(6 + Math.sin(t * 4 + i) * 1.5).toFixed(1)}" fill="${i % 3 === 0 ? GOLD : i % 3 === 1 ? CYAN : '#d7b8ff'}" stroke="${INK}" stroke-width="1.7"/>
+      `).join('')}
+      <!-- Central Radiant Gemini 4-Point Prism -->
+      <g transform="translate(100 148) rotate(${(Math.sin(t * 2.2) * 8).toFixed(1)}) scale(${pulse.toFixed(3)})">
+        <path d="M0 -42 Q9 -9 42 0 Q9 9 0 42 Q-9 9 -42 0 Q-9 -9 0 -42Z" fill="url(#gemini-star-grad)" stroke="${INK}" stroke-width="2.6"/>
+        <path d="M0 -22 Q5 -5 22 0 Q5 5 0 22 Q-5 5 -22 0 Q-5 -5 0 -22Z" fill="#fffdf5" opacity="0.88"/>
+      </g>
+      ${!small ? `
+        <g transform="translate(26 258)">
+          <rect width="148" height="28" rx="14" fill="#fffdf4" stroke="${INK}" stroke-width="2"/>
+          ${Label({ x: 74, y: 19, text: 'XHigh 深度推理', size: 13, fill: INK, anchor: 'middle', weight: 700 })}
+        </g>` : ''}
+    `;
+  };
+
+  const ArtContext = (t, small) => {
+    const beamY = 74 + Math.sin(t * 3.4) * 56 + 56;
+    const docs = [
+      { x: 34, y: 76, rot: -6, c: '#fffdf4', tag: 'API' },
+      { x: 56, y: 98, rot: 4, c: '#e5f9fb', tag: 'PDF' },
+      { x: 42, y: 126, rot: -3, c: '#f2ebff', tag: 'REPO' },
+      { x: 52, y: 158, rot: 2, c: '#fff8db', tag: '1M' },
+    ];
+    return `
+      <rect width="200" height="300" fill="url(#art-ctx-bg)"/>
+      ${!small ? Array.from({ length: 24 }, (_, i) =>
+        `<circle cx="${(seed(i + 71) * 195).toFixed(1)}" cy="${(seed(i + 91) * 290).toFixed(1)}" r="2.2" fill="#fff" opacity="0.45"/>`).join('') : ''}
+      <!-- Header pill -->
+      <rect x="34" y="24" width="132" height="32" rx="16" fill="#302d27"/>
+      ${Label({ x: 100, y: 45, text: '1,000,000 Tokens', size: 13, fill: CYAN, anchor: 'middle', weight: 700 })}
+      <!-- Stacked hand-drawn document sheets -->
+      ${docs.map((d, i) => `
+        <g transform="translate(${d.x} ${(d.y + Math.sin(t * 3 + i) * 3).toFixed(1)}) rotate(${d.rot} 55 30)">
+          <rect x="0" y="0" width="112" height="62" rx="8" fill="${d.c}" stroke="${INK}" stroke-width="2.2"/>
+          <path d="M12 18 H72 M12 30 H96 M12 42 H82" stroke="${INK}" stroke-width="2" opacity="0.35" stroke-linecap="round"/>
+          <rect x="74" y="8" width="30" height="15" rx="5" fill="${i === 3 ? GOLD : CYAN}" stroke="${INK}" stroke-width="1.3"/>
+          ${Label({ x: 89, y: 19, text: d.tag, size: 9.5, fill: INK, anchor: 'middle', weight: 700 })}
+        </g>`).join('')}
+      <!-- Electric cyan scan laser -->
+      <rect x="16" y="${beamY.toFixed(1)}" width="168" height="5" rx="2.5" fill="${CYAN}" opacity="0.9"/>
+      <rect x="16" y="${(beamY - 8).toFixed(1)}" width="168" height="21" fill="${CYAN}" opacity="0.18"/>
+      ${!small ? Heart(168, 86 + Math.sin(t * 4) * 5, 0.58, '#ee8ea8') + Star(28, 224, 7, GOLD) : ''}
+    `;
+  };
+
+  const ArtNeonStage = (t, small, punch = 0, flash = 0) => {
+    const beat = t * (128 / 60) * Math.PI * 2;
+    const scaleBounce = 1 + punch * (0.14 + 0.08 * Math.abs(Math.sin(beat * 0.5)));
+    const tiles = [];
+    for (let row = 0; row < 6; row++) {
+      const y1 = 206 + Math.pow(row / 6, 1.65) * 94;
+      const y2 = 206 + Math.pow((row + 1) / 6, 1.65) * 94;
+      const w1 = 36 + (y1 - 206) * 2.1;
+      const w2 = 36 + (y2 - 206) * 2.1;
+      for (let col = 0; col < 8; col++) {
+        const colors = ['#48c9e0', '#608ef5', '#9c7ef0', '#3d4c8c', '#57b8c6', '#f2cf65', '#c880cf'];
+        const c = colors[(row * 3 + col + Math.floor(t * 4)) % colors.length];
+        tiles.push(`<path d="M${(100 - w1 / 2 + col * w1 / 8).toFixed(1)} ${y1.toFixed(1)} L${(100 - w1 / 2 + (col + 1) * w1 / 8).toFixed(1)} ${y1.toFixed(1)} L${(100 - w2 / 2 + (col + 1) * w2 / 8).toFixed(1)} ${y2.toFixed(1)} L${(100 - w2 / 2 + col * w2 / 8).toFixed(1)} ${y2.toFixed(1)}Z" fill="${c}" opacity="0.88" stroke="#222749" stroke-width="0.6"/>`);
+      }
+    }
+    return `
+      <rect width="200" height="300" fill="url(#art-neon-bg)"/>
+      <!-- Sweeping neon spotlights -->
+      <g opacity="${(0.18 + flash * 0.16).toFixed(2)}">
+        ${[0, 1, 2].map(i => `<path transform="rotate(${(Math.sin(t * 2.5 + i * 1.4) * 24).toFixed(1)} 100 44)" d="M100 44 L${-75 + i * 115} 214 L${-25 + i * 115} 214Z" fill="${i === 1 ? '#ffe899' : i === 0 ? '#79f2ff' : '#d2b0ff'}"/>`).join('')}
+      </g>
+      <!-- Neon perspective floor -->
+      <path d="M0 206 H200 V300 H0Z" fill="#1e2447"/>
+      ${tiles.join('')}
+      <!-- Hanging Faceted Gemini Neon Prism -->
+      <path d="M100 0 V24" stroke="${INK}" stroke-width="2.2"/>
+      <g transform="translate(100 46) rotate(${(Math.sin(t * 3) * 10).toFixed(1)})">
+        <circle cx="0" cy="0" r="24" fill="${CYAN}" opacity="${(0.18 + flash * 0.15).toFixed(2)}"/>
+        <path d="M0 -22 Q5 -5 22 0 Q5 5 0 22 Q-5 5 -22 0 Q-5 -5 0 -22Z" fill="url(#gemini-star-grad)" stroke="${INK}" stroke-width="2"/>
+        ${Star(-7, -7, 4.5, '#fff', 0.95, INK)}
+      </g>
+      <!-- Dancing Neon Bot on stage! -->
+      <g transform="translate(100 202) scale(${scaleBounce.toFixed(3)}) translate(-100 -202)">
+        ${NeonBot({ x: 64, y: 158, s: 0.72, t, dance: true, mood: 'happy', glasses: flash > 0.65 })}
+      </g>
+      ${!small ? [0, 1, 2, 3, 4, 5].map(i =>
+        Star(18 + seed(i + 210) * 164, 62 + seed(i + 240) * 195, 3 + (2 + flash * 3.5) * (0.5 + 0.5 * Math.sin(t * 5 + i * 2)), i % 2 ? GOLD : '#dffbff')
+      ).join('') : ''}
+    `;
+  };
+
+  const renderArt = (kind, t, small = false, punch = 0, flash = 0) => {
+    if (kind === 'code') return ArtCode(t, small);
+    if (kind === 'reason') return ArtReason(t, small);
+    if (kind === 'context') return ArtContext(t, small);
+    return ArtNeonStage(t, small, punch, flash);
+  };
+
+  const ArtTile = (x, y, w, h, kind, clipId) => `
+    <g>
+      <defs><clipPath id="${clipId}"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5"/></clipPath></defs>
+      <g clip-path="url(#${clipId})">
+        <svg x="${x}" y="${y}" width="${w}" height="${h}" viewBox="0 0 200 300" preserveAspectRatio="xMidYMid slice">
+          <use href="#thumb-${kind}"/>
+        </svg>
+      </g>
+    </g>`;
+
+  // Hand-drawn transition icons (exact charm of reference)
+  const TransitionIcon = (idx, x, y, s = 1) => {
+    let body = '';
+    if (idx === 0) {
+      // Spiral spin
+      body = `
+        <path d="M9 -16 C-10 -24 -24 1 -10 14 C5 29 26 7 14 -6 C3 -19 -11 -3 -1 6 C8 15 14 0 6 -3" fill="none" stroke="${CYAN}" stroke-width="8"/>
+        <path d="M9 -16 C-10 -24 -24 1 -10 14 C5 29 26 7 14 -6 C3 -19 -11 -3 -1 6 C8 15 14 0 6 -3" fill="none"/>
+        <path d="M3 -20 l10 -1 -2 11" fill="${CYAN}"/>`;
+    } else if (idx === 1) {
+      // Neon Glitch
+      body = `
+        <rect x="-16" y="-12" width="32" height="25" rx="5" fill="#b4a3ee"/>
+        <path d="M-21 -6 v10 m42 -11 v7 M-8 -12 h8 m-3 25 h9" stroke="${CYAN}" stroke-width="4.2"/>
+        <path d="M-8 -3 v3 m13 -3 v3 m-10 6 h7"/>`;
+    } else if (idx === 2) {
+      // Page flip
+      body = `
+        <path d="M-13 -17 L15 -18 L14 17 L-13 16Z" fill="#fffef5"/>
+        <path d="M-7 -11 H9 M-7 -4 H9 M-7 3 H6 M-7 10 H1"/>
+        <path d="M14 4 L3 16 L4 5Z" fill="#e4decc"/>`;
+    } else if (idx === 3) {
+      // Zoom punch
+      body = `<circle cx="-3" cy="-4" r="13" fill="#e2f7fa"/><path d="M6 7 l16 16" stroke="${CORAL}" stroke-width="8.5"/><path d="M-3 -10 v12 m-6 -6 h12"/>`;
+    } else if (idx === 4) {
+      // Slide beam
+      body = `<rect x="-12" y="-14" width="27" height="29" rx="3" fill="${TEAL}"/><path d="M-1 -7 l8 8 -8 7" fill="none" stroke="#fff" stroke-width="4"/><path d="M-25 -9 h8 m-10 8 h10 m-8 8 h7"/>`;
+    } else {
+      // Star dissolve
+      body = Star(0, 0, 17, GOLD);
+    }
+    return `<g transform="translate(${x} ${y}) scale(${s})" stroke="${INK}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${body}</g>`;
+  };
+
+  // =====================================================================
+  // Timeline State Machine (14.0 seconds = 420 frames @ 30fps)
+  // =====================================================================
+  function stateAt(frame) {
+    const t = frame / FPS;
+    // Cut progress (snipping out slow bloat at 4.72..5.22s)
+    const cut = progress(t, 4.72, 5.22, easeInOutCubic);
+
+    // Sidebar active tab: 0=素材, 1=特效, 2=字幕
+    const tab = t < 5.55 ? 0 : t < 6.72 ? 1 : 2;
+
+    // Right panel sliders (animated 7.55..9.25s)
+    const thinkVal = lerp(0.42, 0.96, progress(t, 7.55, 8.00));
+    const codeAcc = lerp(0.68, 0.99, progress(t, 8.00, 8.42));
+    const tokenCost = lerp(0.84, 0.24, progress(t, 8.42, 8.85)); // slides DOWN to save 60%!
+    const neonGlow = lerp(0.32, 1.00, progress(t, 8.85, 9.25));
+
+    // Export progress (10.82..11.52s)
+    const exportProgress = progress(t, 10.82, 11.52, easeOutCubic);
+    // Ending transition (11.65..12.15s)
+    const ending = progress(t, 11.65, 12.15, easeInOutCubic);
+
+    // Active artwork in Center Preview Phone
+    let kind = 'code';
+    if (ending > 0.3) {
+      // Fast exciting montage in ending, landing on hero neon stage!
+      if (t < 12.05) kind = 'code';
+      else if (t < 12.35) kind = 'reason';
+      else if (t < 12.65) kind = 'context';
+      else kind = 'neon';
+    } else if (t < 2.25) kind = 'code';
+    else if (t < 2.75) kind = 'reason';
+    else if (t < 3.25) kind = 'context';
+    else if (t < 3.70) kind = 'neon';
+    else if (t < 5.55) kind = 'reason'; // bloat focus gag happens on reason clip
+    else if (t < 6.45) kind = 'context'; // spin + glitch transition showcase
+    else if (t < 7.45) kind = 'context'; // caption typing
+    else kind = 'neon'; // slider crank + beat drop + export!
+
+    // Typing caption length ("XHigh 强推理!")
+    const captionFull = 'XHigh 强推理!';
+    const captionLen = t < 6.78 ? 0 : Math.min(captionFull.length, Math.floor(progress(t, 6.78, 7.36, x => x) * (captionFull.length + 0.5)));
+
+    // Playhead position along timeline (0..14s visual track progress)
+    let playhead = 0.05;
+    if (t >= 1.5 && t < 3.7) playhead = lerp(0.05, 0.52, progress(t, 1.5, 3.7, x => x));
+    else if (t >= 3.7 && t < 5.55) playhead = lerp(0.34, 0.42, progress(t, 3.7, 5.55, x => x));
+    else if (t >= 5.55 && t < 7.45) playhead = lerp(0.44, 0.72, progress(t, 5.55, 7.45, x => x));
+    else if (t >= 7.45 && t < 11.65) playhead = lerp(0.72, 0.96, progress(t, 7.45, 11.65, x => x));
+    else if (t >= 11.65) playhead = 0.96;
+
+    // Punch & flash intensities for Neon Stage
+    const punch = t >= 9.35 ? 1 : progress(t, 8.85, 9.35);
+    const flash = neonGlow;
+
+    return {
+      t, frame, cut, tab, thinkVal, codeAcc, tokenCost, neonGlow,
+      exportProgress, ending, kind, captionFull, captionLen, playhead, punch, flash
+    };
+  }
+
+  // Smooth Virtual Camera (pan & zoom following the story!)
+  function cameraAt(t) {
+    // Keyframes: [time, zoom, cx, cy] where (cx,cy) is focal point in 1080x1080 space
+    const keys = [
+      [0.00, 1.00, 540, 540],
+      [1.35, 1.00, 540, 540],
+      [1.75, 1.08, 430, 580],  // Focus left sidebar + timeline dragging
+      [3.55, 1.08, 470, 610],
+      [3.95, 1.16, 520, 535],  // Zoom into center phone & bloat cut
+      [5.35, 1.16, 515, 565],
+      [5.75, 1.12, 430, 480],  // Left transitions + phone + caption
+      [7.20, 1.12, 470, 460],
+      [7.60, 1.22, 765, 425],  // Pan right to 调参 sliders!
+      [9.15, 1.22, 755, 445],
+      [9.55, 1.09, 560, 600],  // Pull back for Beat Drop dance!
+      [10.60, 1.09, 595, 575],
+      [10.95, 1.04, 640, 420], // Pan slightly up-right for Export click
+      [11.55, 1.00, 540, 540], // Settle wide for Grand Finale
+      [14.00, 1.00, 540, 540],
+    ];
+    let k0 = keys[0], k1 = keys[keys.length - 1];
+    for (let i = 0; i < keys.length - 1; i++) {
+      if (t >= keys[i][0] && t <= keys[i + 1][0]) {
+        k0 = keys[i]; k1 = keys[i + 1]; break;
+      }
+    }
+    const u = k1[0] === k0[0] ? 0 : easeInOutCubic((t - k0[0]) / (k1[0] - k0[0]));
+    const zoom = lerp(k0[1], k1[1], u);
+    const cx = lerp(k0[2], k1[2], u);
+    const cy = lerp(k0[3], k1[3], u);
+    // SVG transform translate(tx ty) scale(zoom) keeps (cx, cy) centered while clamping viewport inside 0..1080
+    const minT = 1080 - 1080 * zoom;
+    const tx = clamp(540 - cx * zoom, minT, 0);
+    const ty = clamp(540 - cy * zoom, minT, 0);
+    return { zoom, tx, ty };
+  }
+
+  // =====================================================================
+  // UI Components tailored for 1080x1080 square canvas
+  // =====================================================================
+  function renderToolbar(s) {
+    const sec = Math.floor(s.t);
+    const fr = Math.floor((s.t - sec) * FPS);
+    const tc = `00:00:${String(sec).padStart(2, '0')}:${String(fr).padStart(2, '0')}`;
+    const btnFill = s.t < 10.82 ? TEAL : s.t < 11.52 ? GOLD : '#82d4b4';
+    const btnText = s.t < 10.82 ? '↥ 导出' : s.t < 11.52 ? `渲染 ${Math.round(s.exportProgress * 99)}%` : '完成 ✓';
+    const btnTextColor = s.t < 10.82 ? '#ffffff' : INK;
+    return `
+      <g>
+        ${Box({ x: 28, y: 26, w: 1024, h: 52, r: 12, fill: '#fcfaf4' })}
+        ${['#de8587', '#edcf77', '#94be99'].map((c, i) => `<circle cx="${48 + i * 18}" cy="52" r="5.2" fill="${c}" stroke="${INK}" stroke-width="1.2"/>`).join('')}
+        ${NeonBot({ x: 104, y: 40, s: 0.23, t: s.t, mood: 'happy' })}
+        ${Label({ x: 140, y: 58, text: 'Gemini_Neon_宣传片_v4.mp4', size: 20, weight: 700 })}
+        ${Box({ x: 454, y: 34, w: 156, h: 36, r: 8, fill: '#35332d', sw: 2 })}
+        ${Label({ x: 532, y: 58, text: tc, size: 19, fill: '#f7f0e4', anchor: 'middle' })}
+        ${Label({ x: 626, y: 57, text: '· 1M 上下文', size: 14, fill: '#8e8b80' })}
+        ${Box({ x: 742, y: 36, w: 106, h: 32, r: 8, fill: '#efeadc', sw: 1.7 })}
+        ${Label({ x: 795, y: 57, text: '1080×1080', size: 15, anchor: 'middle', weight: 700 })}
+        ${Box({ x: 862, y: 34, w: 176, h: 36, r: 9, fill: btnFill, sw: 2.1 })}
+        ${s.t >= 10.82 && s.t < 11.52 ? `<rect x="864" y="36" width="${(172 * s.exportProgress).toFixed(1)}" height="32" rx="7" fill="${MINT}" opacity="0.55"/>` : ''}
+        ${Label({ x: 950, y: 58, text: btnText, size: 18, fill: btnTextColor, anchor: 'middle', weight: 700 })}
+        ${s.t >= 11.45 && s.t < 12.1 ? Star(1038, 34, 11 * Math.sin(progress(s.t, 11.45, 12.1, x => x) * Math.PI), GOLD) + Star(864, 70, 8 * Math.sin(progress(s.t, 11.45, 12.1, x => x) * Math.PI), CYAN) : ''}
+      </g>`;
+  }
+
+  function renderSidebar(s) {
+    const tabs = ['素材', '特效', '字幕'];
+    const cards = [
+      { kind: 'code', name: '代码重构.ts', dur: '2.2s' },
+      { kind: 'reason', name: '深度推理.ai', dur: '3.4s' },
+      { kind: 'context', name: '1M上下文.doc', dur: '2.6s' },
+      { kind: 'neon', name: 'Neon高能.mp4', dur: '3.8s' },
+    ];
+    let body = '';
+    if (s.tab === 0) {
+      body = cards.map((c, i) => {
+        const cx = 42 + (i % 2) * 124;
+        const cy = 152 + Math.floor(i / 2) * 176;
+        const activeRing = s.t > 1.52 + i * 0.48 && s.t < 2.02 + i * 0.48;
+        return `
+          <g>
+            ${Box({ x: cx, y: cy, w: 112, h: 132, r: 8, fill: '#fff', sw: 2 })}
+            ${ArtTile(cx + 2, cy + 2, 108, 128, c.kind, `sb-clip-${i}`)}
+            <rect x="${cx + 72}" y="${cy + 109}" width="36" height="18" rx="5" fill="#302d27aa"/>
+            ${Label({ x: cx + 90, y: cy + 122, text: c.dur, size: 11, fill: '#fff', anchor: 'middle' })}
+            ${Label({ x: cx + 56, y: cy + 153, text: c.name, size: 14, anchor: 'middle', weight: 700 })}
+            ${activeRing ? `<rect x="${cx - 4}" y="${cy - 4}" width="120" height="140" rx="10" fill="none" stroke="${GOLD}" stroke-width="3.6"/>` : ''}
+          </g>`;
+      }).join('') + `
+        <g>
+          <rect x="42" y="514" width="236" height="114" rx="10" fill="none" stroke="#c3bcaf" stroke-width="1.8" stroke-dasharray="6 6"/>
+          ${Star(160, 554, 13, '#e4f6f9', 1, '#9c978b')}
+          ${Label({ x: 160, y: 590, text: '＋ 拖入任意代码 / 文档', size: 15, fill: '#999487', anchor: 'middle' })}
+          ${Label({ x: 160, y: 612, text: '支持 1M Context 直出', size: 12, fill: '#b3ae9f', anchor: 'middle' })}
+        </g>`;
+    } else if (s.tab === 1) {
+      const fxNames = ['旋转切', '霓虹故障', '翻页', '缩放冲击', '光束扫过', '星芒溶解'];
+      const fxColors = ['#d2edf8', '#e5dbf7', '#d8f0e4', '#fae2dc', '#f9ecc2', '#efe9dc'];
+      body = fxNames.map((nm, i) => {
+        const cx = 42 + (i % 2) * 124;
+        const cy = 158 + Math.floor(i / 2) * 150;
+        const hi = (i === 0 && s.t > 5.65 && s.t < 6.18) || (i === 1 && s.t > 6.18 && s.t < 6.72);
+        return `
+          <g>
+            ${Box({ x: cx, y: cy, w: 112, h: 102, r: 8, fill: fxColors[i], sw: 1.9 })}
+            ${TransitionIcon(i, cx + 56, cy + 51, 1.0)}
+            ${Label({ x: cx + 56, y: cy + 126, text: nm, size: 15, anchor: 'middle', weight: 700 })}
+            ${hi ? `<rect x="${cx - 4}" y="${cy - 4}" width="120" height="110" rx="10" fill="none" stroke="${GOLD}" stroke-width="3.6"/>` : ''}
+          </g>`;
+      }).join('');
+    } else {
+      const styles = [
+        { bg: '#fff3d2', tag: '爆款贴纸', content: Sticker({ x: 160, y: 230, text: 'XHigh 强推理!', size: 24, fill: GOLD }) },
+        { bg: '#e3f7f8', tag: '效率气泡', content: `${Box({ x: 76, y: 358, w: 168, h: 48, r: 22, fill: '#ffffff', stroke: TEAL, sw: 2.2 })}${Label({ x: 160, y: 390, text: '省 60% Token', size: 22, fill: '#2c8689', anchor: 'middle', weight: 700 })}` },
+        { bg: '#23203d', tag: '霓虹发光', dark: true, content: `${Label({ x: 160, y: 540, text: 'GEMINI NEON', size: 25, fill: CYAN, anchor: 'middle', weight: 700, extra: `stroke="${NEON_VIOLET}" stroke-width="7" opacity="0.45"` })}${Label({ x: 160, y: 540, text: 'GEMINI NEON', size: 25, fill: '#f6fdff', anchor: 'middle', weight: 700 })}` }
+      ];
+      body = styles.map((st, i) => `
+        <g>
+          ${Box({ x: 42, y: 158 + i * 156, w: 236, h: 138, r: 10, fill: st.bg, sw: 1.9 })}
+          ${Label({ x: 56, y: 180 + i * 156, text: st.tag, size: 12, fill: st.dark ? '#b6b0df' : '#9c9684' })}
+          ${st.content}
+          ${i === 0 ? `<rect x="38" y="154" width="244" height="146" rx="12" fill="none" stroke="${GOLD}" stroke-width="3.2"/>` : ''}
+        </g>`).join('');
+    }
+
+    return `
+      <g>
+        ${Box({ x: 28, y: 92, w: 264, h: 556, r: 12, fill: '#faf7ef' })}
+        ${tabs.map((w, i) => `
+          <g>
+            ${Box({ x: 42 + i * 81, y: 106, w: 74, h: 32, r: 7, fill: s.tab === i ? GOLD : '#efebe0', sw: 1.6 })}
+            ${Label({ x: 79 + i * 81, y: 128, text: w, size: 17, fill: s.tab === i ? INK : '#928c7f', anchor: 'middle', weight: s.tab === i ? 700 : 400 })}
+          </g>`).join('')}
+        ${body}
+      </g>`;
+  }
+
+  function renderSettings(s) {
+    const thinkLabel = s.thinkVal > 0.82 ? 'XHigh' : s.thinkVal > 0.58 ? 'High' : 'Mid';
+    const tokenDelta = Math.round((s.tokenCost - 0.84) * 100); // 0% -> -60%
+    const rows = [
+      { name: '推理深度', val: s.thinkVal, text: thinkLabel, bar: NEON_VIOLET, hi: s.thinkVal > 0.82 },
+      { name: '代码准确', val: s.codeAcc, text: `${Math.round(s.codeAcc * 100)}%`, bar: TEAL, hi: false },
+      { name: 'Token 消耗', val: s.tokenCost, text: tokenDelta < -5 ? `${tokenDelta}%` : '基准', bar: MINT, hi: tokenDelta <= -40 },
+      { name: '霓虹亮度', val: s.neonGlow, text: `${Math.round(s.neonGlow * 100)}%`, bar: CYAN, hi: s.neonGlow > 0.9 },
+    ];
+    return `
+      <g>
+        ${Box({ x: 788, y: 92, w: 264, h: 556, r: 12, fill: '#faf7ef' })}
+        ${Label({ x: 808, y: 132, text: '调参', size: 24, weight: 700 })}
+        ${Star(874, 123, 9.5, GOLD)}
+        ${Label({ x: 1034, y: 131, text: 'Neon 引擎', size: 13, fill: '#8f8b7f', anchor: 'end' })}
+        <path d="M806 150 H1034" stroke="#b3afa2" stroke-width="1.2"/>
+        ${rows.map((r, i) => {
+          const y = 212 + i * 84;
+          const kx = 808 + 222 * r.val;
+          return `
+            <g>
+              ${Label({ x: 808, y: y - 22, text: r.name, size: 18, weight: 700 })}
+              ${r.hi ? `<rect x="974" y="${y - 40}" width="60" height="24" rx="7" fill="${r.bar}" opacity="0.26"/>` : ''}
+              ${Label({ x: 1032, y: y - 22, text: r.text, size: 16, fill: r.hi ? INK : '#6f7066', anchor: 'end', weight: r.hi ? 700 : 400 })}
+              <rect x="808" y="${y - 4}" width="222" height="9" rx="4.5" fill="#e2dfd4" stroke="${INK}" stroke-width="1.4"/>
+              <rect x="809" y="${y - 2.5}" width="${Math.max(8, 220 * r.val).toFixed(1)}" height="6" rx="3" fill="${r.bar}"/>
+              <circle cx="${kx.toFixed(1)}" cy="${y + 0.5}" r="10.5" fill="#fffdf6" stroke="${INK}" stroke-width="2"/>
+              <circle cx="${kx.toFixed(1)}" cy="${y + 0.5}" r="2.3" fill="${r.bar}"/>
+            </g>`;
+        }).join('')}
+        <!-- Bottom Neon Spec Card -->
+        ${Box({ x: 806, y: 526, w: 228, h: 104, r: 10, fill: '#f2efe4', sw: 1.8 })}
+        ${Star(828, 554, 10, CYAN)}
+        ${Label({ x: 846, y: 560, text: 'Gemini 4 · Neon', size: 17, weight: 700 })}
+        ${Label({ x: 820, y: 586, text: '深度推理 × 极速效率', size: 14, fill: '#6c6b62' })}
+        <rect x="820" y="600" width="200" height="12" rx="6" fill="#dfdacf" stroke="${INK}" stroke-width="1.2"/>
+        <rect x="821" y="601" width="${(198 * (0.45 + 0.55 * s.neonGlow)).toFixed(1)}" height="10" rx="5" fill="url(#gemini-bar-grad)"/>
+      </g>`;
+  }
+
+  function renderPhone(s, { x = 378, y = 104, w = 324, h = 496, final = false } = {}) {
+    const focusGag = s.t > 3.78 && s.t < 4.82 && !final;
+    const spinDeg = (s.t > 5.88 && s.t < 6.26 && !final) ? progress(s.t, 5.88, 6.26, easeInOutCubic) * 360 : 0;
+    const glitchOn = s.t > 6.38 && s.t < 6.66 && !final;
+    const typedCap = s.captionFull.slice(0, s.captionLen);
+    const clipId = final ? 'phone-screen-final' : 'phone-screen-edit';
+
+    const screenFilter = focusGag
+      ? 'grayscale(1) blur(2.6px)'
+      : s.kind === 'neon'
+        ? `saturate(${(0.95 + s.neonGlow * 0.42).toFixed(2)})`
+        : '';
+
+    return `
+      <g transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${(w / 210).toFixed(4)} ${(h / 314).toFixed(4)})">
+        ${Box({ x: 0, y: 0, w: 210, h: 314, r: 26, fill: '#2a2829', sw: 2.8 })}
+        <rect x="5" y="4" width="200" height="305" rx="23" fill="#373437" stroke="#6a6155" stroke-width="1.1"/>
+        <path d="M-2 58 v18 M-2 92 v24 M211 76 v36" stroke="${INK}" stroke-width="2.7" stroke-linecap="round"/>
+        <defs><clipPath id="${clipId}"><rect x="11" y="11" width="188" height="292" rx="19"/></clipPath></defs>
+        <g clip-path="url(#${clipId})">
+          <svg x="11" y="11" width="188" height="292" viewBox="0 0 200 300" preserveAspectRatio="none">
+            <g ${screenFilter ? `style="filter:${screenFilter}"` : ''} transform="rotate(${spinDeg.toFixed(1)} 100 150)">
+              ${renderArt(s.kind, s.t, false, s.punch, s.flash)}
+            </g>
+            ${glitchOn ? Array.from({ length: 8 }, (_, i) =>
+              `<rect x="${i % 2 ? 0 : 18}" y="${i * 38}" width="185" height="${8 + (i % 3) * 4}" fill="${i % 2 ? CYAN : '#e39ed4'}" opacity="0.62"/>`).join('') : ''}
+            ${focusGag ? `
+              <g>
+                <path d="M30 68 v-16 h20 M170 68 v-16 h-20 M30 168 v16 h20 M170 168 v16 h-20" fill="none" stroke="${INK}" stroke-width="5.2"/>
+                <path d="M30 68 v-16 h20 M170 68 v-16 h-20 M30 168 v16 h20 M170 168 v16 h-20" fill="none" stroke="#fffef4" stroke-width="3"/>
+                <circle cx="100" cy="108" r="16" fill="none" stroke="#e2dfd1" stroke-width="4" opacity="0.55"/>
+                <path d="M100 92 a16 16 0 0 0 -13 25" fill="none" stroke="#fff" stroke-width="4" transform="rotate(${(s.t * 210).toFixed(1)} 100 108)"/>
+                ${Sticker({ x: 100, y: 152, text: '冗长思考中..', size: 19, fill: '#fffdf4' })}
+              </g>` : ''}
+            ${!final && s.t >= 6.8 && s.t < 9.35 && typedCap ? Sticker({ x: 100, y: 232, text: typedCap, size: 22, fill: GOLD }) : ''}
+            ${final ? `
+              <g fill="#fffcec" stroke="${INK}" stroke-width="1.2">
+                <circle cx="174" cy="52" r="14" fill="${NEON_BLUE}" stroke="#fff8ea" stroke-width="2"/>
+                ${Star(174, 52, 8, '#fff7c4', 1, INK)}
+                <circle cx="174" cy="67" r="5" fill="#ec747b" stroke="none"/>
+                ${Heart(174, 102, 0.72, '#ee8aa6')}
+                <rect x="163" y="138" width="22" height="15" rx="5" fill="#fffdf3"/>
+                <path d="M168 152 v5 l6 -5" fill="#fffdf3"/>
+                <path d="M169 145 h1 m4 0 h1 m4 0 h1" stroke-width="2"/>
+                <path d="M163 194 q3 -13 15 -15 v-5 l11 9 -11 9 v-5 q-9 -1 -15 7Z"/>
+              </g>
+              ${Label({ x: 174, y: 124, text: s.t < 13.0 ? '9.8w' : '10.2w', size: 10, fill: '#fff', anchor: 'middle', extra: `stroke="${INK}" stroke-width="2.2" paint-order="stroke"` })}
+              ${Label({ x: 174, y: 168, text: '2333', size: 10, fill: '#fff', anchor: 'middle', extra: `stroke="${INK}" stroke-width="2.2" paint-order="stroke"` })}
+              ${Label({ x: 174, y: 208, text: '分享', size: 10, fill: '#fff', anchor: 'middle', extra: `stroke="${INK}" stroke-width="2.2" paint-order="stroke"` })}
+              ${s.kind === 'neon' ? Sticker({ x: 98, y: 126, text: '拿捏了!', size: 34, fill: GOLD, rotate: -5 }) : ''}
+              ${[0, 1, 2, 3, 4, 5].map(i => Star(14 + seed(i + 860) * 140, 22 + seed(i + 670) * 232, 3.5 + seed(i + 860) * 5.5, i % 2 ? GOLD : '#c9fbff', 0.65 + 0.35 * Math.sin(s.t * 6 + i))).join('')}
+              ${Label({ x: 12, y: 268, text: '@Gemini · 4 Neon', size: 12.5, fill: '#fff', weight: 700, extra: `stroke="${INK}" stroke-width="2.4" paint-order="stroke"` })}
+              ${Label({ x: 12, y: 286, text: '#AI编程 #强推理 #极速出片', size: 10, fill: '#fff', extra: `stroke="${INK}" stroke-width="1.8" paint-order="stroke"` })}
+            ` : ''}
+          </svg>
+        </g>
+        <!-- Dynamic island pill -->
+        <rect x="85" y="17" width="40" height="10.5" rx="5.2" fill="#222123"/>
+        ${!final ? `
+          <g>
+            ${Label({ x: 74, y: 336, text: 'Ⅰ◀', size: 13.5, fill: '#7c7e72', anchor: 'middle' })}
+            <circle cx="105" cy="331" r="10.5" fill="none" stroke="#7c7e72" stroke-width="1.5"/>
+            ${Label({ x: 105, y: 336, text: s.t > 2.2 ? 'Ⅱ' : '▶', size: 13.5, fill: '#7c7e72', anchor: 'middle' })}
+            ${Label({ x: 136, y: 336, text: '▶Ⅰ', size: 13.5, fill: '#7c7e72', anchor: 'middle' })}
+          </g>` : ''}
+      </g>`;
+  }
+
+  function renderTimeline(s) {
+    const clipData = [
+      { kind: 'code', name: '代码重构.ts', color: '#5894f5', baseW: 196 },
+      { kind: 'reason', name: '深度推理.ai', color: '#9e84ee', baseW: 292 - s.cut * 108 },
+      { kind: 'context', name: '1M上下文.doc', color: '#70c8be', baseW: 194 },
+      { kind: 'neon', name: 'Neon高能.mp4', color: '#d882be', baseW: 224 },
+    ];
+    let cx = 104;
+    const starts = clipData.map((c) => { const x = cx; cx += c.baseW + 5; return x; });
+
+    const ticks = Array.from({ length: 57 }, (_, i) => {
+      const tx = 104 + i * 16.4;
+      const major = i % 4 === 0;
+      const label = i % 8 === 0 ? Label({ x: tx, y: 694, text: `0:${String(i / 4).padStart(2, '0')}`, size: 13, fill: '#79796e', anchor: 'middle' }) : '';
+      return `<path d="M${tx.toFixed(1)} 715 v${major ? -16 : -7}" stroke="#a7a496" stroke-width="1.1"/>${label}`;
+    }).join('');
+
+    const clipsHtml = clipData.map((c, i) => {
+      const appear = 1.85 + i * 0.48;
+      if (s.t < appear) return '';
+      const op = progress(s.t, appear, appear + 0.14);
+      const count = i === 1 ? 4 : 3;
+      const tileW = (c.baseW - 6) / count;
+      const tiles = Array.from({ length: count }, (_, k) =>
+        ArtTile(starts[i] + 3 + k * tileW, 784, tileW, 88, c.kind, `tl-${i}-${k}`)).join('');
+      return `
+        <g opacity="${op.toFixed(3)}">
+          ${Box({ x: starts[i], y: 781, w: c.baseW, h: 94, r: 7, fill: c.color, sw: 2.1 })}
+          ${tiles}
+          <rect x="${(starts[i] + 6).toFixed(1)}" y="786" width="90" height="19" rx="7" fill="#fffdf5ee" stroke="#999182" stroke-width="0.9"/>
+          ${Label({ x: starts[i] + 13, y: 800, text: c.name, size: 12, weight: 700 })}
+        </g>`;
+    }).join('');
+
+    const waveBars = Array.from({ length: 240 }, (_, i) => {
+      const a = (6 + seed(i + 90) * 26) * (i < 16 ? 0.45 : 1);
+      const beatGlow = s.t >= 9.35 && ((i + Math.floor(s.t * 20)) % 9 === 0);
+      return `<path d="M${(112 + i * 3.8).toFixed(1)} ${(924 - a / 2).toFixed(1)} v${a.toFixed(1)}" stroke="${beatGlow ? '#f0b835' : '#8e84c6'}" stroke-width="1.7"/>`;
+    }).join('');
+
+    const playheadX = 104 + s.playhead * 920;
+
+    // Beat markers
+    const beatMarkers = s.t >= 9.35 ? `
+      <g opacity="${progress(s.t, 9.35, 9.65).toFixed(3)}">
+        ${Array.from({ length: 26 }, (_, i) => {
+          const active = Math.floor((s.t - 9.35) * (128 / 60) * 2) % 26 === i;
+          return `<path d="M${108 + i * 35.5} 964 l7 13 7 -13Z" fill="${active ? CYAN : GOLD}" stroke="${INK}" stroke-width="1.2"/>`;
+        }).join('')}
+        ${Box({ x: 916, y: 896, w: 108, h: 48, r: 8, fill: GOLD, sw: 2 })}
+        ${Label({ x: 970, y: 927, text: '▽ 卡点', size: 20, anchor: 'middle', weight: 700 })}
+      </g>` : '';
+
+    return `
+      <g>
+        ${Box({ x: 28, y: 664, w: 1024, h: 388, r: 12, fill: '#faf8f0' })}
+        <path d="M104 715 H1032" stroke="#55564c" stroke-width="1.4"/>
+        ${ticks}
+        <!-- Track lane backgrounds -->
+        <rect x="104" y="726" width="928" height="42" rx="6" fill="#eeece4"/>
+        <rect x="104" y="780" width="928" height="96" rx="6" fill="#edeae3"/>
+        <rect x="104" y="888" width="928" height="64" rx="6" fill="#efede7"/>
+        <!-- Left track icons -->
+        ${Box({ x: 42, y: 726, w: 48, h: 42, r: 7, fill: '#faf0ce', sw: 1.9 })}
+        ${Label({ x: 66, y: 754, text: 'T', size: 22, anchor: 'middle', weight: 700 })}
+        ${Box({ x: 42, y: 780, w: 48, h: 96, r: 7, fill: '#d6f0ea', sw: 1.9 })}
+        ${Label({ x: 66, y: 836, text: '▶', size: 24, anchor: 'middle' })}
+        ${Box({ x: 42, y: 888, w: 48, h: 64, r: 7, fill: '#e6e0f7', sw: 1.9 })}
+        ${Label({ x: 66, y: 930, text: '♪', size: 30, anchor: 'middle' })}
+        <!-- Clips -->
+        ${clipsHtml}
+        <!-- Bloat hatched section on Clip 2 (before & during cut) -->
+        ${s.t > 3.72 && s.t < 5.3 ? `
+          <g opacity="${(1 - s.cut).toFixed(3)}">
+            <rect x="${(starts[1] + 126).toFixed(1)}" y="784" width="${(108 * (1 - s.cut)).toFixed(1)}" height="88" fill="#8b877c" opacity="0.82"/>
+            <rect x="${(starts[1] + 126).toFixed(1)}" y="784" width="${(108 * (1 - s.cut)).toFixed(1)}" height="88" fill="url(#hatch)"/>
+            ${Label({ x: starts[1] + 180 - s.cut * 40, y: 838, text: 'z z z', size: 26, fill: '#e5e1d4', anchor: 'middle', weight: 700 })}
+          </g>` : ''}
+        <!-- Crisp black cut seam line after snip -->
+        ${s.t >= 5.15 ? `<path d="M${(starts[1] + 126).toFixed(1)} 781 V875" stroke="${INK}" stroke-width="2.8"/>` : ''}
+        <!-- Transition badges between clips -->
+        ${s.t >= 5.95 ? `<g><circle cx="${starts[2].toFixed(1)}" cy="828" r="18" fill="#fffdf4" stroke="${INK}" stroke-width="2"/>${TransitionIcon(0, starts[2], 828, 0.56)}</g>` : ''}
+        ${s.t >= 6.45 ? `<g><circle cx="${starts[3].toFixed(1)}" cy="828" r="18" fill="#fffdf4" stroke="${INK}" stroke-width="2"/>${TransitionIcon(1, starts[3], 828, 0.56)}</g>` : ''}
+        <!-- Caption block on T1 -->
+        ${s.t >= 6.76 ? `
+          <g>
+            ${Box({ x: starts[2] + 2, y: 730, w: 220, h: 34, r: 6, fill: GOLD, sw: 1.7 })}
+            ${Label({ x: starts[2] + 12, y: 753, text: `T  ${s.captionFull.slice(0, s.captionLen)}`, size: 15, weight: 700 })}
+          </g>` : ''}
+        <!-- Audio Waveform Clip -->
+        ${s.t >= 3.35 ? `
+          <g opacity="${progress(s.t, 3.35, 3.62).toFixed(3)}">
+            ${Box({ x: 104, y: 891, w: 924, h: 58, r: 7, fill: '#eae3f7', sw: 1.8 })}
+            ${Label({ x: 116, y: 907, text: '♪ neon_beat_128bpm.wav', size: 12, fill: '#57507a', weight: 700 })}
+            ${waveBars}
+          </g>` : ''}
+        ${beatMarkers}
+        <!-- Playhead -->
+        <path d="M${playheadX.toFixed(1)} 690 V962" stroke="#e45e78" stroke-width="2.6"/>
+        <path d="M${(playheadX - 8).toFixed(1)} 686 h16 v12 l-8 8 -8 -8Z" fill="#e6677e" stroke="${INK}" stroke-width="1.6"/>
+        <!-- Footer zoom bar & summary -->
+        <path d="M52 1018 h8 m12 0 h96 m16 -5 v10 m-5 -5 h10" stroke="#b6b3a8" stroke-width="1.5"/>
+        <circle cx="118" cy="1018" r="5" fill="#fffdf9" stroke="#9d998d" stroke-width="1.4"/>
+        ${Label({ x: 1026, y: 1023, text: `片段 4 · 1080×1080 · 总时长 0:${(15.8 - s.cut * 1.8).toFixed(1)}s`, size: 14, fill: '#9f9b8f', anchor: 'end' })}
+      </g>`;
+  }
+
+  function renderEditorMascot(s) {
+    const t = s.t;
+    if (t < 1.35 || s.ending >= 0.99) return '';
+    const op = progress(t, 1.35, 1.60) * (1 - s.ending);
+
+    // Mascot position along the desk / timeline rail (never obscures Phone or Right Panel spec card)
+    let x = 152, y = 696;
+    if (t >= 3.70 && t < 5.55) { x = lerp(152, 270, progress(t, 3.70, 4.10)); y = 702; }
+    if (t >= 5.55 && t < 7.40) { x = lerp(270, 175, progress(t, 5.55, 5.85)); y = 698; }
+    if (t >= 7.40 && t < 9.35) { x = lerp(175, 628, progress(t, 7.40, 7.72)); y = 678; }
+    if (t >= 9.35 && t < 10.72) {
+      x = lerp(628, 760, progress(t, 9.35, 10.72, x => x));
+      y = 700 - 11 * Math.abs(Math.sin(t * (128 / 60) * Math.PI));
+    }
+    if (t >= 10.72) { x = lerp(760, 825, progress(t, 10.72, 11.05)); y = 678; }
+
+    const sx = x + 66, sy = y + 30;
+    let target = null;
+    let heldHtml = '';
+
+    // Dragging 4 capability cards (1.52..3.44s)
+    if (t >= 1.52 && t < 3.44) {
+      const i = clamp(Math.floor((t - 1.52) / 0.48), 0, 3);
+      const p = ((t - 1.52) / 0.48) % 1;
+      const u = progress(p, 0.25, 0.88);
+      const fromX = 98 + (i % 2) * 124;
+      const fromY = 218 + Math.floor(i / 2) * 176;
+      const toX = 195 + i * 212;
+      const toY = 826;
+      target = [lerp(fromX, toX, u), lerp(fromY, toY, u)];
+      const kinds = ['code', 'reason', 'context', 'neon'];
+      heldHtml = `
+        <g transform="rotate(${(Math.sin(t * 9) * 8).toFixed(1)} ${target[0].toFixed(1)} ${target[1].toFixed(1)})">
+          ${Box({ x: target[0] - 34, y: target[1] - 42, w: 68, h: 84, r: 5, fill: GOLD, sw: 1.7 })}
+          ${ArtTile(target[0] - 32, target[1] - 40, 64, 80, kinds[i], 'held-card')}
+        </g>`;
+    }
+    // Scissor snip bloat (4.52..5.05s)
+    if (t >= 4.52 && t < 5.08) {
+      const u = progress(t, 4.52, 4.82);
+      target = [lerp(370, 434, u), lerp(760, 838, u)];
+    }
+    // Dragging transitions (5.68..6.55s)
+    if (t >= 5.68 && t < 6.12) {
+      const u = progress(t, 5.75, 6.08);
+      target = [lerp(98, 495, u), lerp(208, 828, u)];
+      heldHtml = `<g><circle cx="${target[0].toFixed(1)}" cy="${target[1].toFixed(1)}" r="20" fill="#fffdf4" stroke="${INK}" stroke-width="1.9"/>${TransitionIcon(0, target[0], target[1], 0.65)}</g>`;
+    } else if (t >= 6.18 && t < 6.60) {
+      const u = progress(t, 6.22, 6.55);
+      target = [lerp(222, 694, u), lerp(208, 828, u)];
+      heldHtml = `<g><circle cx="${target[0].toFixed(1)}" cy="${target[1].toFixed(1)}" r="20" fill="#fffdf4" stroke="${INK}" stroke-width="1.9"/>${TransitionIcon(1, target[0], target[1], 0.65)}</g>`;
+    }
+    // Dragging 4 right sliders (7.55..9.25s)
+    if (t >= 7.55 && t < 8.00) target = [808 + 222 * s.thinkVal, 212];
+    else if (t >= 8.00 && t < 8.42) target = [808 + 222 * s.codeAcc, 296];
+    else if (t >= 8.42 && t < 8.85) target = [808 + 222 * s.tokenCost, 380];
+    else if (t >= 8.85 && t < 9.25) target = [808 + 222 * s.neonGlow, 464];
+
+    // Clicking Export (10.78..11.22s)
+    if (t >= 10.78 && t < 11.25) {
+      const u = progress(t, 10.78, 10.95);
+      target = [lerp(890, 950, u), lerp(300, 54, u)];
+    }
+
+    const mood = t < 3.6 ? 'wink' : t < 4.5 ? 'sleep' : t < 7.5 ? 'focus' : 'happy';
+
+    return `
+      <g opacity="${op.toFixed(3)}">
+        ${target ? Arm(sx, sy, target[0], target[1], target[0] > sx ? 14 : -14) : ''}
+        ${heldHtml}
+        ${t >= 7.55 && t < 9.25 && target ? `<circle cx="${target[0].toFixed(1)}" cy="${target[1].toFixed(1)}" r="15" fill="none" stroke="${GOLD}" stroke-width="4.2" opacity="0.88"/>` : ''}
+        ${NeonBot({ x, y, s: 0.86, t, mood, glasses: t >= 9.28, dance: t >= 9.35 && t < 10.72 })}
+
+        <!-- Speech bubble for bloat gag -->
+        ${t > 3.85 && t < 4.65 ? `
+          <g transform="translate(362 728) scale(${easeOutBack(progress(t, 3.85, 4.10, x => x)).toFixed(3)})">
+            <path d="M0 -42 H178 Q188 -42 188 -32 V-10 Q188 0 176 0 H96 L86 13 76 0 H0 Q-10 0 -10 -10 V-32 Q-10 -42 0 -42Z" fill="#fffdf5" stroke="${INK}" stroke-width="2.2"/>
+            ${Label({ x: 89, y: -15, text: '太耗 Token zzz', size: 19, anchor: 'middle', weight: 700 })}
+          </g>` : ''}
+
+        <!-- Comic slash + "咔嚓!" sticker during cut -->
+        ${t > 4.66 && t < 5.30 ? `
+          <g>
+            ${Sticker({ x: 472, y: 744, text: '咔嚓!', fill: '#f29eb6', size: 38, rotate: -10 })}
+            <path d="M432 780 Q466 814 432 868 Q448 824 432 780Z" fill="#fffceb" stroke="${INK}" stroke-width="1.8"/>
+          </g>` : ''}
+
+        <!-- Green rubber stamp: "省 60% Token" -->
+        ${t > 5.08 && t < 5.75 ? `
+          <g transform="translate(620 692) rotate(-10) scale(${easeOutBack(progress(t, 5.08, 5.26, x => x)).toFixed(3)})">
+            <rect x="-86" y="-28" width="172" height="50" rx="6" fill="#f6f3e9dd" stroke="#539e7a" stroke-width="3.5"/>
+            <rect x="-80" y="-22" width="160" height="38" rx="4" fill="none" stroke="#539e7a" stroke-width="1.5"/>
+            ${Label({ x: 0, y: 7, text: '省 60% Token', size: 23, fill: '#3e8965', anchor: 'middle', weight: 700 })}
+          </g>` : ''}
+
+        <!-- Beat Drop "卡点!" sticker -->
+        ${t > 9.45 && t < 10.65 ? `
+          <g transform="translate(278 732) scale(${easeOutBack(progress(t, 9.45, 9.68, x => x)).toFixed(3)})">
+            ${Sticker({ x: 0, y: 0, text: '卡点!', fill: CYAN, size: 42, rotate: -8 })}
+          </g>` : ''}
+      </g>`;
+  }
+
+  // =====================================================================
+  // Grand 1080x1080 Ending (11.65s .. 14.00s)
+  // =====================================================================
+  function renderEnding(s) {
+    const p = s.ending;
+    if (p <= 0) return '';
+    const t = s.t;
+
+    // Interpolate Phone smoothly from workspace center (378, 104, 324x496) -> Hero Right (548, 108, 452x692)
+    const px = lerp(378, 548, p);
+    const py = lerp(104, 108, p);
+    const pw = lerp(324, 452, p);
+    const ph = lerp(496, 692, p);
+
+    // Taped lined paper sticky note (left side: x=48..504, y=184..652)
+    const noteIn = progress(t, 11.82, 12.22, easeOutBack);
+    const noteOp = progress(t, 11.80, 12.12);
+    const line1Full = '14 秒极速搞定，';
+    const line1Text = line1Full.slice(0, Math.floor(progress(t, 12.02, 12.60, x => x) * (line1Full.length + 0.5)));
+    const heroOp = progress(t, 12.48, 12.82);
+    const underlineP = progress(t, 12.72, 13.18, easeOutCubic);
+    const signOp = progress(t, 13.05, 13.38);
+
+    // Bottom-left 3 capability pills with crisp hand-drawn SVG icons (x=54..496, y=694..916)
+    const pills = [
+      {
+        text: 'XHigh 深度推理', bg: '#ece4fc', rot: -1.4, at: 12.35,
+        icon: Star(32, 28, 12, '#8b6be8', 1, INK),
+      },
+      {
+        text: 'Agentic 代码重构', bg: '#daf5f8', rot: 0.9, at: 12.55,
+        icon: `<g stroke="${INK}" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M25 22 L18 28 L25 34"/><path d="M39 22 L46 28 L39 34"/><path d="M34 19 L30 37" stroke="#2d9fb0"/></g>`,
+      },
+      {
+        text: '1M 上下文 · 省 60% Token', bg: '#fcf1cf', rot: -0.8, at: 12.75,
+        icon: `<path d="M35 14 L22 30 H32 L29 42 L42 26 H32 Z" fill="${GOLD}" stroke="${INK}" stroke-width="2" stroke-linejoin="round"/>`,
+      },
+    ];
+    const pillsHtml = pills.map((pl, i) => {
+      const u = progress(t, pl.at, pl.at + 0.30, easeOutBack);
+      const op = progress(t, pl.at, pl.at + 0.20);
+      if (op <= 0) return '';
+      return `
+        <g opacity="${op.toFixed(3)}" transform="translate(56 ${(694 + i * 74 + (1 - u) * 26).toFixed(1)}) rotate(${pl.rot} 220 28)">
+          ${Box({ x: 0, y: 0, w: 438, h: 56, r: 14, fill: pl.bg, sw: 2.2 })}
+          ${pl.icon}
+          ${Label({ x: 58, y: 36, text: pl.text, size: 24, fill: INK, weight: 700 })}
+        </g>`;
+    }).join('');
+
+    // Confetti across full 1080x1080 canvas
+    const confOp = progress(t, 11.80, 12.15);
+    const confetti = Array.from({ length: 42 }, (_, i) => {
+      const cx = 36 + seed(i + 800) * 1008;
+      const cy = ((t - 11.65) * (65 + seed(i + 500) * 95) + seed(i + 710) * 980) % 1120 - 30;
+      const cw = 6 + seed(i + 30) * 7;
+      const rot = t * 90 + i * 29;
+      const colors = [GOLD, CYAN, NEON_VIOLET, CORAL, MINT];
+      return `<rect x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" width="${cw.toFixed(1)}" height="5.5" rx="1" transform="rotate(${rot.toFixed(1)} ${cx.toFixed(1)} ${cy.toFixed(1)})" fill="${colors[i % colors.length]}" stroke="${INK}" stroke-width="0.8"/>`;
+    }).join('');
+
+    // Bottom-right winking celebrating Neon Bot (clears Phone bottom cleanly!)
+    const botOp = p;
+    const waveX = 934 + Math.sin(t * 14) * 9;
+    const waveY = 842 + Math.cos(t * 14) * 5;
+
+    return `
+      <g>
+        <!-- Hero enlarged Phone -->
+        ${renderPhone(s, { x: px, y: py, w: pw, h: ph, final: p > 0.45 })}
+
+        <!-- Taped Lined Paper Sticky Note -->
+        <g opacity="${noteOp.toFixed(3)}" transform="translate(${lerp(-58, 0, noteIn).toFixed(1)} 0) rotate(-1.8 276 418)">
+          ${Box({ x: 48, y: 184, w: 456, h: 462, r: 12, fill: '#fffefa', sw: 2.4 })}
+          ${Array.from({ length: 9 }, (_, i) => `<path d="M68 ${256 + i * 44} H482" stroke="#e7e3da" stroke-width="1.2"/>`).join('')}
+          <!-- Translucent gold masking tape -->
+          <path d="M214 172 H342 L340 202 H212Z" fill="${GOLD}" opacity="0.78"/>
+          <path d="M220 176 H334" stroke="#deb74b" opacity="0.65" stroke-width="2.2"/>
+
+          ${Label({ x: 76, y: 276, text: line1Text, size: 37, fill: '#5d5e57', weight: 700 })}
+          <g opacity="${heroOp.toFixed(3)}">
+            ${Label({ x: 76, y: 372, text: 'Gemini 4', size: 70, fill: '#232421', weight: 700, extra: 'font-style="italic"' })}
+            ${Label({ x: 78, y: 462, text: 'Neon', size: 84, fill: '#2a5ad7', weight: 700, extra: 'font-style="italic"' })}
+            <!-- Sweeping hand-drawn double neon/coral underline -->
+            <path d="M74 484 Q240 462 452 478" fill="none" stroke="${CORAL}" stroke-width="6.5" stroke-linecap="round" pathLength="1" stroke-dasharray="1" stroke-dashoffset="${(1 - underlineP).toFixed(3)}"/>
+            <path d="M90 496 Q256 476 436 490" fill="none" stroke="${CYAN}" stroke-width="4.2" stroke-linecap="round" pathLength="1" stroke-dasharray="1" stroke-dashoffset="${(1 - underlineP).toFixed(3)}"/>
+          </g>
+          <g opacity="${signOp.toFixed(3)}">
+            ${Label({ x: 226, y: 598, text: '— 小霓 收工', size: 34, fill: '#717268', weight: 700 })}
+            ${Star(450, 585, 15, GOLD)}
+          </g>
+        </g>
+
+        <!-- Bottom-left 3 Capability Pills -->
+        ${pillsHtml}
+
+        <!-- Bottom-right Celebrating Mascot -->
+        <g opacity="${botOp.toFixed(3)}">
+          ${t > 12.15 ? Arm(824, 922, waveX, waveY, 22) : ''}
+          ${NeonBot({ x: 706, y: 874, s: 1.34, t, glasses: true, mood: t > 12.7 ? 'wink' : 'happy' })}
+          ${t > 12.15 ? Star(waveX + 26, waveY - 12, 11.5 + 2.5 * Math.sin(t * 10), GOLD) + Star(waveX - 6, waveY - 28, 6.5, CYAN) : ''}
+        </g>
+
+        <!-- Confetti Shower -->
+        <g opacity="${confOp.toFixed(3)}">${confetti}</g>
+      </g>`;
+  }
+
+  // Static SVG defs (gradients, patterns, cached clip thumbnails)
+  const DEFS_HTML = `
+    <defs>
+      <linearGradient id="neon-bot-body" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#5d96f7"/>
+        <stop offset="55%" stop-color="#4fc6e8"/>
+        <stop offset="100%" stop-color="#7c8ef4"/>
+      </linearGradient>
+      <linearGradient id="neon-bot-leg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#4e83de"/>
+        <stop offset="100%" stop-color="#697ce0"/>
+      </linearGradient>
+      <linearGradient id="gemini-star-grad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#6ff2ff"/>
+        <stop offset="50%" stop-color="#6e98ff"/>
+        <stop offset="100%" stop-color="#c693ff"/>
+      </linearGradient>
+      <linearGradient id="gemini-bar-grad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#4ed4e8"/>
+        <stop offset="50%" stop-color="#6992f5"/>
+        <stop offset="100%" stop-color="#a884f2"/>
+      </linearGradient>
+      <linearGradient id="art-code-bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#283159"/>
+        <stop offset="100%" stop-color="#495387"/>
+      </linearGradient>
+      <linearGradient id="art-reason-bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#272654"/>
+        <stop offset="60%" stop-color="#4d4487"/>
+        <stop offset="100%" stop-color="#353c6e"/>
+      </linearGradient>
+      <linearGradient id="art-ctx-bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#c6efe7"/>
+        <stop offset="100%" stop-color="#e8f6d7"/>
+      </linearGradient>
+      <linearGradient id="art-neon-bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#2c3169"/>
+        <stop offset="58%" stop-color="#6b569e"/>
+        <stop offset="100%" stop-color="#3a3369"/>
+      </linearGradient>
+      <pattern id="hatch" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(40)">
+        <path d="M0 0 V9 M3.5 0 V9" stroke="#302d27" stroke-width="1" opacity="0.28"/>
+      </pattern>
+      <pattern id="paper-grain" width="80" height="80" patternUnits="userSpaceOnUse">
+        ${Array.from({ length: 28 }, (_, i) =>
+          `<circle cx="${(seed(i) * 80).toFixed(1)}" cy="${(seed(i + 80) * 80).toFixed(1)}" r="${(0.35 + seed(i + 160) * 0.75).toFixed(2)}" fill="#8b7c63" opacity="0.16"/>`).join('')}
+      </pattern>
+      <g id="thumb-code">${ArtCode(1, true)}</g>
+      <g id="thumb-reason">${ArtReason(1, true)}</g>
+      <g id="thumb-context">${ArtContext(1, true)}</g>
+      <g id="thumb-neon">${ArtNeonStage(1, true, 0.4, 0.7)}</g>
+    </defs>`;
+
+  const stageEl = document.getElementById('stage');
+
+  function renderFrame(frame) {
+    const f = clamp(Math.round(frame), 0, TOTAL_FRAMES - 1);
+    const s = stateAt(f);
+    const cam = cameraAt(s.t);
+    const draw = progress(s.t, 0.16, 1.05, easeInOutCubic);
+
+    // Pencil tracing sidebar border (0.16..1.18s)
+    let pencilHtml = '';
+    if (s.t < 1.32) {
+      const px = s.t < 0.62 ? lerp(42, 292, progress(s.t, 0.16, 0.62, x => x)) : 292;
+      const py = s.t < 0.62 ? 92 : lerp(92, 646, progress(s.t, 0.62, 1.05, x => x));
+      pencilHtml = `
+        <g opacity="${(1 - progress(s.t, 1.08, 1.30)).toFixed(3)}">
+          <rect x="28" y="92" width="264" height="556" rx="12" fill="#eee9df" opacity="${(draw * 0.72).toFixed(3)}"/>
+          <rect x="28" y="92" width="264" height="556" rx="12" fill="none" stroke="${INK}" stroke-width="2.7" pathLength="1" stroke-dasharray="1" stroke-dashoffset="${(1 - draw).toFixed(3)}"/>
+          <g transform="translate(${px.toFixed(1)} ${py.toFixed(1)}) rotate(-28) scale(1.35)">
+            <path d="M0 0 h24 v8 H0 l-8 -4Z" fill="${GOLD}" stroke="${INK}" stroke-width="1.4"/>
+            <path d="M20 0 h6 v8 h-6" fill="#e28ea1" stroke="${INK}" stroke-width="1.3"/>
+            <path d="M-8 4 l3 -1.6 v3.2Z" fill="${INK}"/>
+          </g>
+        </g>`;
+    }
+
+    const uiFade = 1 - s.ending * 0.74;
+    const panelsIn = progress(s.t, 0.88, 1.35, easeOutCubic);
+    const phoneIn = progress(s.t, 1.05, 1.45, easeOutBack);
+
+    stageEl.innerHTML = `
+      ${DEFS_HTML}
+      <rect width="1080" height="1080" fill="${PAPER}"/>
+      <g transform="translate(${cam.tx.toFixed(2)} ${cam.ty.toFixed(2)}) scale(${cam.zoom.toFixed(4)})">
+        <g opacity="${uiFade.toFixed(3)}">
+          ${Box({ x: 14, y: 14, w: 1052, h: 1052, r: 20, fill: PAPER, sw: 2.5 })}
+          <g opacity="${progress(s.t, 0.0, 0.25).toFixed(3)}">${renderToolbar(s)}</g>
+          ${pencilHtml}
+          <g opacity="${panelsIn.toFixed(3)}">
+            ${renderSidebar(s)}
+            ${renderSettings(s)}
+            ${renderTimeline(s)}
+          </g>
+          ${s.ending === 0 ? `<g opacity="${clamp(phoneIn).toFixed(3)}" transform="translate(540 352) scale(${lerp(0.92, 1, phoneIn).toFixed(4)}) translate(-540 -352)">${renderPhone(s)}</g>` : ''}
+          ${renderEditorMascot(s)}
+        </g>
+      </g>
+      ${s.ending > 0 ? renderEnding(s) : ''}
+      <rect width="1080" height="1080" fill="url(#paper-grain)" pointer-events="none" opacity="0.54"/>
+    `;
+  }
+
+  window.TOTAL_FRAMES = TOTAL_FRAMES;
+  window.FPS = FPS;
+  window.setFrame = renderFrame;
+  window.__ready = false;
+
+  // Interactive browser playback controls (disabled in ?render=1 mode)
+  let playing = !RENDER_MODE;
+  let curFrame = 0;
+  let lastTs = 0;
+  const scrubber = document.getElementById('scrubber');
+  const timeLabel = document.getElementById('time-label');
+  const btnPlay = document.getElementById('btn-play');
+  const btnReplay = document.getElementById('btn-replay');
+
+  function syncUI() {
+    scrubber.value = Math.round(curFrame);
+    timeLabel.textContent = `${(curFrame / FPS).toFixed(2).padStart(5, '0')}s / 14.00s`;
+  }
+
+  function loop(ts) {
+    if (!lastTs) lastTs = ts;
+    const dt = (ts - lastTs) / 1000;
+    lastTs = ts;
+    if (playing) {
+      curFrame = (curFrame + dt * FPS) % TOTAL_FRAMES;
+      renderFrame(curFrame);
+      syncUI();
+    }
+    requestAnimationFrame(loop);
+  }
+
+  if (!RENDER_MODE) {
+    btnPlay.onclick = () => { playing = !playing; btnPlay.textContent = playing ? '暂停' : '播放'; };
+    btnReplay.onclick = () => { curFrame = 0; playing = true; btnPlay.textContent = '暂停'; renderFrame(0); syncUI(); };
+    scrubber.oninput = () => { playing = false; btnPlay.textContent = '播放'; curFrame = Number(scrubber.value); renderFrame(curFrame); syncUI(); };
+  }
+
+  document.fonts.ready.then(() => {
+    renderFrame(0);
+    window.__ready = true;
+    if (!RENDER_MODE) requestAnimationFrame(loop);
+  });
+})();
+</script>
+</body>
+</html>
